@@ -62,12 +62,11 @@ USER_PROMPT = """## CONTEXT:
 
 
 llm_client = AzureChatOpenAI(
-    #TODO:
-    # temperature=0.0
-    # azure_deployment='gpt-4o'
-    # azure_endpoint=DIAL_URL
-    # api_key=SecretStr(API_KEY)
-    # api_version=""
+    temperature=0.0,
+    azure_deployment='gpt-4o',
+    azure_endpoint=DIAL_URL,
+    api_key=SecretStr(API_KEY),
+    api_version="2024-02-01",
 )
 
 
@@ -81,15 +80,12 @@ class GroupingResults(BaseModel):
 
 
 def format_user_document(user: dict[str, Any]) -> str:
-    #TODO:
-    # Return user id and about_me info.
-    # Sample:
-    # User:
-    #   id: {id}
-    #   About user: {about_me}
-    # ---
-    # Th
-    raise NotImplementedError
+    return (
+        f"User:\n"
+        f"  id: {user.get('id')}\n"
+        f"  About user: {user.get('about_me')}\n"
+        f"---"
+    )
 
 
 class InputGrounder:
@@ -109,62 +105,57 @@ class InputGrounder:
     async def initialize_vectorstore(self, batch_size: int = 50):
         """Initialize vectorstore with all current users."""
         print("🔍 Loading all users for initial vectorstore...")
-        #TODO:
-        # 1. Get all users (use UserClient)
-        # 2. Iterate through users and prepare array of Document with: `[Document(id=user.get('id'), page_content=format_user_document(user)) for user in users]`
-        #    Pay attention that we save user id in separate column, we will use it later for removal of deleted users.
-        #    Also, we persint in `page_content` just user id and `about_me` content, not the whole JSON.
-        # 3. Split all `documents` on batches (100 documents in 1 batch). We need it since Embedding models have limited context window
-        # 4. Setup vectorstore:
-        #       - create Chroma (FAISS doesn't support necessary functionality for further task) as `self.vectorstore` with
-        #           - collection_name="users"
-        #           - embedding_function=self.embeddings
-        #       - Prepare tasks array: iterate through batches and call `self.vectorstore.aadd_documents(batch)`
-        #       - Gather tasks: `await asyncio.gather(*tasks)`
-        raise NotImplementedError
+        users = self.user_client.get_all_users()
+        documents = [Document(id=str(user.get('id')), page_content=format_user_document(user)) for user in users]
+        batches = [documents[i:i + batch_size] for i in range(0, len(documents), batch_size)]
+        self.vectorstore = Chroma(
+            collection_name="users",
+            embedding_function=self.embeddings,
+        )
+        tasks = [self.vectorstore.aadd_documents(batch) for batch in batches]
+        await asyncio.gather(*tasks)
 
     async def retrieve_context(self, query: str, k: int = 100, score: float = 0.2) -> str:
         """Retrieve context, with optional automatic vectorstore update."""
-        #TODO:
-        # 1. Call `_update_vectorstore` to fetch new users to vectorstor and remove deleted
-        # 2. Make similarity search (`similarity_search_with_relevance_scores` method)
-        # 3. Create `context_parts` empty array (we will collect content here)
-        # 4. Iterate through retrieved relevant docs (pay attention that its tuple (doc, relevance_score)) and:
-        #       - add doc page content to `context_parts` and then `print(f"Retrieved (Score: {relevance_score:.3f}): {doc.page_content}")`
-        # 5. Return joined context from `context_parts` with `\n\n` spliterator (to enhance readability)
-        raise NotImplementedError
+        await self._update_vectorstore()
+        results = self.vectorstore.similarity_search_with_relevance_scores(query, k=k, score_threshold=score)
+        context_parts = []
+        for doc, relevance_score in results:
+            context_parts.append(doc.page_content)
+            print(f"Retrieved (Score: {relevance_score:.3f}): {doc.page_content}")
+        return "\n\n".join(context_parts)
 
     async def _update_vectorstore(self):
-        #TODO:
-        # 1. Get all users (use UserClient)
-        # 2. Get all the data from the vectorstore: `self.vectorstore.get()`
-        # 3. Get set of ids from the vectorstor: `set(str(user_id) for user_id in vectorstore_data.get("ids", []))`. We
-        #    need it to compare ids from DB with ids that we get via latest API call to UserService
-        # 4. Prepare dict from retrieved users (key is user id, value is full user info): `{str(user.get('id')): user for user in users}`
-        # 5. Prepare set with users ids
-        # 6. Find new user ids: `users_ids_set - vectorstore_ids_set`
-        # 7. Find user ids that need to be deleted: `vectorstore_ids_set - users_ids_set`
-        # 8. If `ids_to_delete` is not empty then delete from vectorstore all rows with collected `ids_to_delete`.
-        #    Chroma has method `delete`, that applies list of ids
-        # 9. Prepare new Documents:
-        #       - Iterate through new user ids and create array with Documents: `Document(id=user_id, page_content=format_user_document(users_dict[user_id]))`
-        # 10. Id new documents are present then save them to vectorstore
-        raise NotImplementedError
+        users = self.user_client.get_all_users()
+        vectorstore_data = self.vectorstore.get()
+        vectorstore_ids_set = set(str(user_id) for user_id in vectorstore_data.get("ids", []))
+        users_dict = {str(user.get('id')): user for user in users}
+        users_ids_set = set(users_dict.keys())
+        new_user_ids = users_ids_set - vectorstore_ids_set
+        ids_to_delete = list(vectorstore_ids_set - users_ids_set)
+        if ids_to_delete:
+            self.vectorstore.delete(ids=ids_to_delete)
+        new_documents = [
+            Document(id=user_id, page_content=format_user_document(users_dict[user_id]))
+            for user_id in new_user_ids
+        ]
+        if new_documents:
+            await self.vectorstore.aadd_documents(new_documents)
 
     def augment_prompt(self, query: str, context: str) -> str:
-        # TODO: Make augmentation for USER_PROMPT via `format` method
-        raise NotImplementedError
+        return USER_PROMPT.format(context=context, query=query)
 
     def generate_answer(self, augmented_prompt: str) -> GroupingResults:
-        #TODO:
-        # 1. Create PydanticOutputParser with `pydantic_object=GroupingResults` as `parser`
-        # 2. Create messages array with:
-        #       - SystemMessagePromptTemplate.from_template(template=SYSTEM_PROMPT)
-        #       - HumanMessage(content=augmented_prompt)
-        # 3. Generate `prompt`: `ChatPromptTemplate.from_messages(messages=messages).partial(format_instructions=parser.get_format_instructions())`
-        # 4. Invoke it: `(prompt | llm_client | parser).invoke({})` as `grouping_results: GroupingResults`
-        # 5. return grouping_results
-        raise NotImplementedError
+        parser = PydanticOutputParser(pydantic_object=GroupingResults)
+        messages = [
+            SystemMessagePromptTemplate.from_template(template=SYSTEM_PROMPT),
+            HumanMessage(content=augmented_prompt),
+        ]
+        prompt = ChatPromptTemplate.from_messages(messages=messages).partial(
+            format_instructions=parser.get_format_instructions()
+        )
+        grouping_results: GroupingResults = (prompt | llm_client | parser).invoke({})
+        return grouping_results
 
 
 class OutputGrounder:
@@ -172,42 +163,33 @@ class OutputGrounder:
         self.user_client = UserClient()
 
     async def ground_response(self, grouping_results: GroupingResults):
-        #TODO:
-        # 1. Iterate through grouping results
-        # 2. Print hobby
-        # 3. Print fetched users: await self._find_users(grouping_result.user_ids)
-        # ---
-        # JFYI:
-        # This is quite simple output grounding (just to verify that such user exist), in reality we would probably
-        # ground the hobbies and some other actions.
-        raise NotImplementedError
+        for grouping_result in grouping_results.grouping_results:
+            print(f"\nHobby: {grouping_result.hobby}")
+            users = await self._find_users(grouping_result.user_ids)
+            print(users)
 
     async def _find_users(self, ids: list[int]) -> list[dict[str, Any]]:
         async def safe_get_user(user_id: int) -> Optional[dict[str, Any]]:
             try:
-                #TODO:
-                # Get user by id (it is async method)
-                raise NotImplementedError
+                return await self.user_client.get_user(user_id)
             except Exception as e:
                 if "404" in str(e):
                     print(f"User with ID {user_id} is absent (404)")
                     return None
                 raise  # Re-raise non-404 errors
 
-        #TODO:
-        # 1. Prepare task array to get users and gather results
-        # 2. Filter results and provide users that is not None
-        raise NotImplementedError
+        tasks = [safe_get_user(user_id) for user_id in ids]
+        results = await asyncio.gather(*tasks)
+        return [user for user in results if user is not None]
 
 
 async def main():
     embeddings = AzureOpenAIEmbeddings(
-        #TODO:
-        # deployment='text-embedding-3-small-1'
-        # azure_endpoint=DIAL_URL
-        # api_key=SecretStr(API_KEY)
-        # dimensions=384
-        # check_embedding_ctx_length=False
+        deployment='text-embedding-3-small-1',
+        azure_endpoint=DIAL_URL,
+        api_key=SecretStr(API_KEY),
+        dimensions=384,
+        check_embedding_ctx_length=False,
     )
     output_grounder = OutputGrounder()
 
@@ -221,12 +203,10 @@ async def main():
             user_question = input("> ").strip()
             if user_question.lower() in ['quit', 'exit']:
                 break
-            #TODO:
-            # 1. Retrieve context
-            # 2. Make augmentation
-            # 3. Generate answer
-            # 4. Make output grounding
-            raise NotImplementedError
+            context = await rag.retrieve_context(user_question)
+            augmented = rag.augment_prompt(user_question, context)
+            grouping_results = rag.generate_answer(augmented)
+            await output_grounder.ground_response(grouping_results)
 
 
 if __name__ == "__main__":
